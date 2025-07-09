@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>GPS追跡＆アクション記録（統合ボタン＋CSV分割）</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; }
+    #btns { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; }
+    #btns button { margin-right: 10px; padding: 8px 12px; font-size: 14px; }
+    #container { display: flex; flex: 1; }
+    #map { flex: 2; }
+    #sidebar { flex: 1; border-left: 1px solid #ccc; padding: 10px; background: #f9f9f9; min-width: 300px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 4px; font-size: 12px; }
+    th { background: #eee; }
+  </style>
+</head>
+<body>
+  <div id="btns">
+    <button id="trackingButton" onclick="toggleTracking()">📍 追跡開始</button>
+    <button onclick="addAction()">📌 アクション記録</button>
+    <button onclick="downloadTrackingCSV()">📥 追跡CSV</button>
+    <button onclick="downloadActionCSV()">📥 アクションCSV</button>
+  </div>
+
+  <div id="container">
+    <div id="map"></div>
+    <div id="sidebar">
+      <h3>📌 アクション一覧</h3>
+      <table>
+        <thead><tr><th>日時</th><th>緯度</th><th>経度</th><th>コメント</th><th>操作</th></tr></thead>
+        <tbody id="actionTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([35.0, 135.0], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    let currentPosition = null;
+    let trackedPoints = [];
+    let actions = [];
+    let actionMarkers = [];
+    let watchId = null;
+    let saveInterval = null;
+    let isTracking = false;
+
+    function toggleTracking() {
+      const btn = document.getElementById("trackingButton");
+      if (!isTracking) {
+        startTracking();
+        btn.innerText = "🛑 追跡中";
+        isTracking = true;
+      } else {
+        stopTracking();
+        btn.innerText = "📍 追跡開始";
+        isTracking = false;
+      }
+    }
+
+    function startTracking() {
+      if (!navigator.geolocation) {
+        alert("このブラウザはGPSに対応していません。");
+        return;
+      }
+
+      watchId = navigator.geolocation.watchPosition(pos => {
+        currentPosition = {
+          緯度: pos.coords.latitude,
+          経度: pos.coords.longitude
+        };
+        const latlng = [currentPosition.緯度, currentPosition.経度];
+        L.circleMarker(latlng, { radius: 4, color: 'blue' }).addTo(map);
+        map.setView(latlng, 16);
+      }, err => {
+        alert("位置取得エラー: " + err.message);
+      }, { enableHighAccuracy: true });
+
+      saveInterval = setInterval(() => {
+        if (currentPosition) {
+          trackedPoints.push({
+            日時: new Date().toISOString(),
+            緯度: currentPosition.緯度,
+            経度: currentPosition.経度,
+            コメント: ""
+          });
+        }
+      }, 1000);
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (saveInterval !== null) {
+        clearInterval(saveInterval);
+        saveInterval = null;
+      }
+    }
+
+    function addAction() {
+      if (!currentPosition) {
+        alert("位置情報がまだ取得されていません。");
+        return;
+      }
+      const comment = prompt("コメントを入力してください:");
+      if (comment) {
+        const action = {
+          日時: new Date().toISOString(),
+          緯度: currentPosition.緯度,
+          経度: currentPosition.経度,
+          コメント: comment
+        };
+        actions.push(action);
+        addActionRow(action, actions.length - 1);
+
+        const marker = L.marker([action.緯度, action.経度]).addTo(map).bindPopup(`📌 ${comment}`);
+        actionMarkers.push(marker);
+      }
+    }
+
+    function addActionRow(action, index) {
+      const row = document.getElementById("actionTableBody").insertRow();
+      row.insertCell().textContent = action.日時;
+      row.insertCell().textContent = action.緯度;
+      row.insertCell().textContent = action.経度;
+      row.insertCell().textContent = action.コメント;
+      const ops = row.insertCell();
+      ops.innerHTML = `<button onclick="editAction(${index}, this)">✏️編集</button>
+                       <button onclick="deleteAction(${index})">🗑削除</button>`;
+    }
+
+    function editAction(index, btn) {
+      const newComment = prompt("新しいコメント:", actions[index].コメント);
+      if (newComment !== null) {
+        actions[index].コメント = newComment;
+        btn.closest('tr').cells[3].textContent = newComment;
+
+        const marker = actionMarkers[index];
+        marker.setPopupContent(`📌 ${newComment}`);
+      }
+    }
+
+    function deleteAction(index) {
+      if (confirm("このアクションを削除しますか？")) {
+        const marker = actionMarkers[index];
+        map.removeLayer(marker);
+        actions.splice(index, 1);
+        actionMarkers.splice(index, 1);
+
+        document.getElementById("actionTableBody").innerHTML = "";
+        actions.forEach((a, i) => addActionRow(a, i));
+      }
+    }
+
+    function convertToCSV(data) {
+      const header = ["日時", "緯度", "経度", "コメント"];
+      const csv = [header.join(",")].concat(
+        data.map(obj =>
+          header.map(h => `"${(obj[h] || "").toString().replace(/"/g, '""')}"`).join(",")
+        )
+      );
+      return csv.join("\r\n");
+    }
+
+    function downloadCSVFile(data, filename) {
+      const csvString = convertToCSV(data);
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([bom, csvString], { type: "text/csv;charset=utf-8;" });
+
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }
+
+    function downloadTrackingCSV() {
+      if (trackedPoints.length === 0) {
+        alert("トラッキングデータがありません。");
+        return;
+      }
+      downloadCSVFile(trackedPoints, "tracking.csv");
+    }
+
+    function downloadActionCSV() {
+      if (actions.length === 0) {
+        alert("アクションデータがありません。");
+        return;
+      }
+      downloadCSVFile(actions, "actions.csv");
+    }
+  </script>
+</body>
+</html>
+
